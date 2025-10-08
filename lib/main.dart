@@ -1,12 +1,27 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:webfeed/webfeed.dart';
+import 'package:webview_flutter/webview_flutter.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 void main() {
   runApp(NewsApp());
 }
 
-class NewsApp extends StatelessWidget {
+class NewsApp extends StatefulWidget {
+  @override
+  State<NewsApp> createState() => _NewsAppState();
+}
+
+class _NewsAppState extends State<NewsApp> {
+  ThemeMode _themeMode = ThemeMode.system;
+
+  void toggleTheme() {
+    setState(() {
+      _themeMode = (_themeMode == ThemeMode.dark) ? ThemeMode.light : ThemeMode.dark;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
@@ -25,8 +40,11 @@ class NewsApp extends StatelessWidget {
           brightness: Brightness.dark,
         ),
       ),
-      themeMode: ThemeMode.system,
-      home: NewsHomePage(),
+      themeMode: _themeMode,
+      home: NewsHomePage(
+        onToggleTheme: toggleTheme,
+        themeMode: _themeMode,
+      ),
     );
   }
 }
@@ -37,6 +55,7 @@ class NewsItem {
   final String link;
   final String? imageUrl;
   final DateTime? pubDate;
+  final String sourceName;
 
   NewsItem({
     required this.title,
@@ -44,6 +63,7 @@ class NewsItem {
     required this.link,
     this.imageUrl,
     this.pubDate,
+    required this.sourceName,
   });
 
   @override
@@ -59,14 +79,29 @@ class NewsItem {
 }
 
 class NewsHomePage extends StatefulWidget {
+  final VoidCallback onToggleTheme;
+  final ThemeMode themeMode;
+
+  const NewsHomePage({
+    required this.onToggleTheme,
+    required this.themeMode,
+  });
+
   @override
-  _NewsHomePageState createState() => _NewsHomePageState();
+  State<NewsHomePage> createState() => _NewsHomePageState();
 }
 
 class _NewsHomePageState extends State<NewsHomePage> {
-  final List<String> rssUrls = [
-    'https://ria.ru/export/rss2/archive/index.xml',
-    'https://lenta.ru/rss',
+  // Список пар (URL, название источника)
+  final List<Map<String, String>> rssSources = [
+    {
+      'url': 'https://ria.ru/export/rss2/archive/index.xml',
+      'name': 'RIA',
+    },
+    {
+      'url': 'https://lenta.ru/rss',
+      'name': 'Lenta',
+    },
   ];
 
   List<NewsItem> allNews = [];
@@ -80,15 +115,19 @@ class _NewsHomePageState extends State<NewsHomePage> {
   }
 
   Future<void> fetchAllNews() async {
-    setState(() => isLoading = true);
+    setState(() {
+      isLoading = true;
+    });
     List<NewsItem> loadedNews = [];
 
-    for (String url in rssUrls) {
+    for (var source in rssSources) {
+      final url = source['url']!;
+      final sourceName = source['name']!;
       try {
         final response = await http.get(Uri.parse(url));
         if (response.statusCode == 200) {
           final feed = RssFeed.parse(response.body);
-          for (var item in feed.items!) {
+          for (var item in feed.items ?? []) {
             final imageUrl = _extractImageUrl(item.description ?? '');
             loadedNews.add(NewsItem(
               title: item.title ?? 'Без названия',
@@ -96,6 +135,7 @@ class _NewsHomePageState extends State<NewsHomePage> {
               link: item.link ?? '',
               imageUrl: imageUrl,
               pubDate: item.pubDate,
+              sourceName: sourceName,
             ));
           }
         }
@@ -118,27 +158,36 @@ class _NewsHomePageState extends State<NewsHomePage> {
 
   void toggleFavorite(NewsItem item) {
     setState(() {
-      favorites.contains(item) ? favorites.remove(item) : favorites.add(item);
+      if (favorites.contains(item)) {
+        favorites.remove(item);
+      } else {
+        favorites.add(item);
+      }
     });
-  }
-
-  // Функция для удаления HTML тегов
-  String removeHtmlTags(String htmlText) {
-    final regex = RegExp(r'<[^>]*>', multiLine: true, caseSensitive: true);
-    return htmlText.replaceAll(regex, '');
   }
 
   @override
   Widget build(BuildContext context) {
+    bool isDark = widget.themeMode == ThemeMode.dark;
+
     return DefaultTabController(
       length: 2,
       child: Scaffold(
         appBar: AppBar(
           title: const Text('Новостной агрегатор'),
-          bottom: const TabBar(tabs: [
-            Tab(icon: Icon(Icons.article), text: 'Все'),
-            Tab(icon: Icon(Icons.star), text: 'Избранное'),
-          ]),
+          actions: [
+            IconButton(
+              icon: Icon(isDark ? Icons.light_mode : Icons.dark_mode),
+              onPressed: widget.onToggleTheme,
+              tooltip: 'Сменить тему',
+            ),
+          ],
+          bottom: const TabBar(
+            tabs: [
+              Tab(icon: Icon(Icons.article), text: 'Все'),
+              Tab(icon: Icon(Icons.star), text: 'Избранное'),
+            ],
+          ),
         ),
         body: isLoading
             ? const Center(child: CircularProgressIndicator())
@@ -148,13 +197,11 @@ class _NewsHomePageState extends State<NewsHomePage> {
               news: allNews,
               favorites: favorites,
               onFavoriteToggle: toggleFavorite,
-              removeHtmlTags: removeHtmlTags,
             ),
             NewsList(
               news: favorites,
               favorites: favorites,
               onFavoriteToggle: toggleFavorite,
-              removeHtmlTags: removeHtmlTags,
             ),
           ],
         ),
@@ -172,14 +219,25 @@ class NewsList extends StatelessWidget {
   final List<NewsItem> news;
   final List<NewsItem> favorites;
   final Function(NewsItem) onFavoriteToggle;
-  final String Function(String) removeHtmlTags;
 
   const NewsList({
     required this.news,
-    required this.onFavoriteToggle,
     required this.favorites,
-    required this.removeHtmlTags,
+    required this.onFavoriteToggle,
   });
+
+  String _formatDate(DateTime? date) {
+    if (date == null) return '';
+    return '${date.day.toString().padLeft(2, '0')} ${_monthName(date.month)} ${date.year}';
+  }
+
+  String _monthName(int month) {
+    const months = [
+      'янв', 'фев', 'мар', 'апр', 'май', 'июн',
+      'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'
+    ];
+    return months[month - 1];
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -194,54 +252,83 @@ class NewsList extends StatelessWidget {
         final item = news[index];
         final isFav = favorites.contains(item);
 
-        return Card(
-          elevation: 4,
-          shape:
-          RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-          margin: const EdgeInsets.symmetric(vertical: 8),
-          child: InkWell(
-            borderRadius: BorderRadius.circular(12),
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => NewsDetailPage(
-                    newsItem: item,
-                    removeHtmlTags: removeHtmlTags,
+        return Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Card(
+            elevation: 3,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: InkWell(
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => NewsDetailPage(newsItem: item),
                   ),
-                ),
-              );
-            },
-            child: Column(
-              children: [
-                if (item.imageUrl != null)
-                  ClipRRect(
-                    borderRadius: const BorderRadius.vertical(
-                        top: Radius.circular(12)),
-                    child: Image.network(
+                );
+              },
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (item.imageUrl != null)
+                    Image.network(
                       item.imageUrl!,
-                      fit: BoxFit.cover,
                       height: 180,
                       width: double.infinity,
-                      errorBuilder: (context, error, stackTrace) =>
-                      const SizedBox(
+                      fit: BoxFit.cover,
+                      errorBuilder: (context, error, stackTrace) {
+                        return const SizedBox(
                           height: 180,
-                          child: Center(child: Icon(Icons.broken_image))),
+                          child: Center(child: Icon(Icons.broken_image)),
+                        );
+                      },
+                    ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                    child: Text(
+                      item.title,
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                   ),
-                ListTile(
-                  title: Text(item.title),
-                  subtitle: Text(
-                    removeHtmlTags(item.description),
-                    maxLines: 3,
-                    overflow: TextOverflow.ellipsis,
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                    child: Text(
+                      item.description.replaceAll(RegExp(r'<[^>]*>'), ''),
+                      maxLines: 3,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
                   ),
-                  trailing: IconButton(
-                    icon: Icon(isFav ? Icons.star : Icons.star_border),
-                    onPressed: () => onFavoriteToggle(item),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        // Левый блок: дата и источник
+                        if (item.pubDate != null)
+                          Text(
+                            '${_formatDate(item.pubDate)} · ${item.sourceName}',
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodySmall
+                                ?.copyWith(color: Colors.grey[600]),
+                          ),
+                        IconButton(
+                          icon: Icon(
+                            isFav ? Icons.star : Icons.star_border,
+                            color: isFav ? Colors.amber : Colors.grey,
+                          ),
+                          onPressed: () => onFavoriteToggle(item),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         );
@@ -250,62 +337,61 @@ class NewsList extends StatelessWidget {
   }
 }
 
-class NewsDetailPage extends StatelessWidget {
+class NewsDetailPage extends StatefulWidget {
   final NewsItem newsItem;
-  final String Function(String) removeHtmlTags;
 
-  const NewsDetailPage({
-    required this.newsItem,
-    required this.removeHtmlTags,
-  });
+  const NewsDetailPage({required this.newsItem});
 
-  String _formatDate(DateTime? date) {
-    if (date == null) return 'Дата неизвестна';
-    return '${date.day.toString().padLeft(2, '0')}.'
-        '${date.month.toString().padLeft(2, '0')}.'
-        '${date.year} ${date.hour.toString().padLeft(2, '0')}:'
-        '${date.minute.toString().padLeft(2, '0')}';
+  @override
+  State<NewsDetailPage> createState() => _NewsDetailPageState();
+}
+
+class _NewsDetailPageState extends State<NewsDetailPage> {
+  late final WebViewController _controller;
+  bool isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setNavigationDelegate(
+        NavigationDelegate(
+          onPageStarted: (_) {
+            setState(() => isLoading = true);
+          },
+          onPageFinished: (_) {
+            setState(() => isLoading = false);
+          },
+        ),
+      )
+      ..loadRequest(Uri.parse(widget.newsItem.link));
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text(newsItem.title)),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (newsItem.imageUrl != null)
-              ClipRRect(
-                borderRadius: BorderRadius.circular(12),
-                child: Image.network(
-                  newsItem.imageUrl!,
-                  fit: BoxFit.cover,
-                  width: double.infinity,
-                  errorBuilder: (context, error, stackTrace) => const SizedBox(
-                      height: 180, child: Center(child: Icon(Icons.broken_image))),
-                ),
-              ),
-            const SizedBox(height: 16),
-            Text(
-              newsItem.title,
-              style: Theme.of(context).textTheme.headlineSmall,
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Опубликовано: ${_formatDate(newsItem.pubDate)}',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-            const SizedBox(height: 12),
-            Text(
-              removeHtmlTags(newsItem.description),
-              style: Theme.of(context).textTheme.bodyMedium,
-            ),
-          ],
-        ),
+      appBar: AppBar(
+        title: Text(widget.newsItem.title, overflow: TextOverflow.ellipsis),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.open_in_browser),
+            onPressed: () async {
+              final url = Uri.parse(widget.newsItem.link);
+              if (await canLaunchUrl(url)) {
+                await launchUrl(url, mode: LaunchMode.externalApplication);
+              }
+            },
+          ),
+        ],
+      ),
+      body: Stack(
+        children: [
+          WebViewWidget(controller: _controller),
+          if (isLoading)
+            const Center(child: CircularProgressIndicator()),
+        ],
       ),
     );
   }
 }
-
